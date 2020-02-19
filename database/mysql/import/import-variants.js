@@ -59,15 +59,35 @@ async function importVariants() {
     const phenotypeName = phenotypes[0].name;
     const phenotypeId = phenotypes[0].id;
     const phenotypePrefix = `${phenotypeName}_${phenotypeId}`;
-    const variantTable = `${phenotypePrefix}_variant`;
+    const variantTable = `${phenotypeName}_variant`;
+
+    console.log(`[${duration()} s] Calculating counts...`);
 
     const [totalCountRows] = await connection.execute(`
         SELECT MIN(id) as firstId,
-        COUNT(*) FROM ${variantTable}
+        COUNT(*) as totalCount FROM ${variantTable}
         WHERE gender = :gender`,
         {gender}
     );
     const {firstId, totalCount} = totalCountRows[0];
+    console.log({firstId, totalCount, totalCountRows})
+
+    // updating variants table with expected p values
+    console.log(`[${duration()} s] Updating expected p-values...`);
+    await connection.query(`
+        CREATE TEMPORARY TABLE variant_expected_p (id bigint, p_value double, p_value_expected double) AS
+            SELECT v.id, v.p_value, (v.id - ${firstId - 1} - 0.5) / (${totalCount}) AS p_value_expected
+            FROM ${variantTable} v WHERE gender = '${gender}' ORDER BY p_value ASC;
+
+        UPDATE ${variantTable} v
+        INNER JOIN variant_expected_p ve ON v.id = ve.id
+            SET v.p_value_expected = ve.p_value_expected
+        WHERE
+            v.id = ve.id;
+    `);
+
+
+    return await connection.end();
 
     // updating variants table with Q-Q plot flag
     console.log(`[${duration()} s] Updating plot_qq values...`);

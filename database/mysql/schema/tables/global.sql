@@ -23,7 +23,7 @@ CREATE TABLE `phenotype_category` (
     `phenotype_id`          INTEGER NOT NULL,
     `value`                 INTEGER,
     `label`                 VARCHAR(200),
-    `display_distribution`  BOOLEAN,
+    `show_distribution`     BOOLEAN,
     FOREIGN KEY (phenotype_id) REFERENCES phenotype(id)
 )
 
@@ -40,7 +40,9 @@ CREATE TABLE `phenotype_metadata` (
     `id`            INTEGER PRIMARY KEY NOT NULL AUTO_INCREMENT,
     `phenotype_id`  INTEGER,
     `gender`        ENUM('all', 'female', 'male'),
+    `chromosome`    ENUM('all', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22'),
     `lambda_gc`     DOUBLE,
+    `count`         BIGINT,
     FOREIGN KEY (phenotype_id) REFERENCES phenotype(id),
     UNIQUE KEY (`phenotype_id`, `gender`)
 );

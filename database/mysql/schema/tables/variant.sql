@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS `$PHENOTYPE_variant` (
     `allele_reference`  VARCHAR(200),
     `allele_effect`     VARCHAR(200),
     `p_value`           DOUBLE,
+    `p_value_expected`  DOUBLE,
     `p_value_nlog`      DOUBLE, -- negative log10(P)
     `p_value_r`         DOUBLE,
     `odds_ratio`        DOUBLE,
