@@ -20,12 +20,13 @@ if (!(args.file && args.phenotype && args.gender)) {
             --file "filename"
             --phenotype "phenotype name or id"
             --gender "all" | "female" | "male"
-            --reset (if specified, remove all records in phenotype)`);
+            --reset (if specified, remove all records in the variant/summary tables)
+            --index (if specified, build indexes on variant/summary tables)`);
     process.exit(0);
 }
 
 // parse arguments and set defaults
-const { file: inputFilePath, phenotype, gender, reset: shouldReset } = args;
+const { file: inputFilePath, phenotype, gender, reset: shouldReset, index: shouldIndex } = args;
 //const errorLog = getLogStream(`./failed-variants-${new Date().toISOString()}.txt`);
 const errorLog = {write: e => console.log(e)};
 const duration = timestamp();
@@ -75,21 +76,25 @@ async function importVariants() {
 
     const phenotypeName = phenotypes[0].name;
     const phenotypeId = phenotypes[0].id;
-    const phenotypePrefix = `${phenotypeName}_${phenotypeId}`;
-    const variantTable = `${phenotypePrefix}_variant`;
-    const aggregateTable = `${phenotypePrefix}_aggregate`;
+    const variantTable = `${phenotypeName}_variant`;
+    const aggregateTable = `${phenotypeName}_aggregate`;
+    const stageTable = `${phenotypeName}_stage`;
+
     const schemaSql = readFile('../../schema/tables/variant.sql').replace(/\$PHENOTYPE/g, phenotypePrefix);
     const indexSql = readFile('../../schema/indexes/variant.sql').replace(/\$PHENOTYPE/g, phenotypePrefix);
 
     // clear variants if needed
     if (shouldReset) {
         console.log(`[${duration()} s] Clearing ${variantTable}, ${aggregateTable}...`);
+
+        // drop existing tables
         await connection.query(`
             DROP TABLE IF EXISTS ${variantTable};
             DROP TABLE IF EXISTS ${aggregateTable};
-            ${schemaSql}
-            ${indexSql}
         `);
+
+        // recreate tables
+        await connection.query(schemaSql);
     }
 
     console.log(`[${duration()} s] Setting up temporary table...`);
@@ -98,12 +103,11 @@ async function importVariants() {
         START TRANSACTION;
         SET autocommit = 0;
 
-        -- disable indexes
-        ALTER TABLE ${variantTable} DISABLE KEYS;
-        ALTER TABLE ${aggregateTable} DISABLE KEYS;
-
-        -- create staging table
-        CREATE TEMPORARY TABLE stage (
+        -- create staging table (do not use a temporary table for this)
+        -- use MyISAM for performance, and for in-place sorting
+        DROP TABLE IF EXISTS ${stageTable}
+        CREATE TABLE ${stageTable} (
+            id                      BIGINT,
             chromosome              VARCHAR(2),
             position                BIGINT,
             position_abs_aggregate  BIGINT,
@@ -111,6 +115,7 @@ async function importVariants() {
             allele_reference        VARCHAR(200),
             allele_effect           VARCHAR(200),
             p_value                 DOUBLE,
+            p_value_expected        DOUBLE, -- negative log10(P)
             p_value_nlog            DOUBLE, -- negative log10(P)
             p_value_nlog_aggregate  DOUBLE,
             p_value_r               DOUBLE,
@@ -118,7 +123,8 @@ async function importVariants() {
             odds_ratio_r            DOUBLE,
             n                       BIGINT,
             q                       DOUBLE,
-            i                       DOUBLE
+            i                       DOUBLE,
+            show_qq_plot            BOOLEAN
         ) ENGINE=MYISAM;
     `);
 
@@ -138,8 +144,54 @@ async function importVariants() {
                 position_abs_aggregate = 1e6 * FLOOR(1e-6 * (SELECT @position + position_abs_min FROM chromosome_range cr WHERE cr.chromosome = @chromosome))`
     });
 
-    console.log(`[${duration()} s] Finished loading, storing variants...`);
+    // index this table to assist in sorting and filtering
+    console.log(`[${duration()} s] Finished loading, indexing ${stageTable}...`);
+    await connection.query(`
+        ALTER TABLE ${stageTable}
+            ADD INDEX (p_value),
+            ADD INDEX (chromosome);
+    `);
 
+    // we need to sort the staging table by p-values in ascending order
+    // and associate each row with an index after filtering
+    console.log(`[${duration()} s] Finished loading, filtering and ordering ${stageTable}...`);
+    await connection.query(`
+        DELETE FROM ${stageTable} WHERE p_value NOT BETWEEN 0 AND 1 OR chromosome IS NULL;
+        ALTER TABLE ${stageTable} ORDER BY p_value;
+
+        SET @id = 0;
+        UPDATE ${stageTable} SET id = (SELECT @id := @id + 1);
+        ALTER TABLE ${stageTable} ADD INDEX (id);
+    `);
+
+    // here, we add additional data to the staging table and calculate the median p-value
+    console.log(`[${duration()} s] Calculating expected p-values, median p-value, and show_qq_plot flags...`);
+    const [medianRows] = await connection.query(`
+        SET @count = (SELECT COUNT(*) FROM ${stageTable});
+        set @midpoint = (SELECT CEIL(@count / 2));
+        set @midpoint_offset = (SELECT @count % 2);
+
+        -- refer to R ppoints function
+        UPDATE ${stageTable} SET
+            p_value_expected = (id - 0.5) / @count;
+
+        -- calculate show_qq_plot flag using -x^2, using id as the index parameter
+        UPDATE ${stageTable}
+            SET show_qq_plot = 1
+            WHERE id IN (
+                SELECT @count - ROUND(@count * (1 - POW(id / 10000 - 1, 2)))
+                FROM ${stageTable} LIMIT 10000;
+            );
+
+        -- calculate median p-value
+        SELECT AVG(p_value) FROM ${stageTable}
+            WHERE id IN (@midpoint, 1 + @midpoint - @midpoint_offset);
+    `);
+    const pMedian = pluck(medianRows.pop()); // get last result set
+    const lambdaGC = getLambdaGC(pMedian);
+
+
+    console.log(`[${duration()} s] Inserting values into variant table...`);
     await connection.execute(`
         INSERT INTO ${variantTable} (
             gender,
@@ -149,6 +201,7 @@ async function importVariants() {
             allele_reference,
             allele_effect,
             p_value,
+            p_value_expected,
             p_value_nlog,
             p_value_r,
             odds_ratio,
@@ -165,6 +218,7 @@ async function importVariants() {
             allele_reference,
             allele_effect,
             p_value,
+            p_value_expected,
             p_value_nlog,
             p_value_r,
             odds_ratio,
@@ -172,18 +226,10 @@ async function importVariants() {
             n,
             q,
             i,
-            0
+            show_qq_plot
         FROM stage
-        WHERE p_value BETWEEN 0 AND 1 AND chromosome IS NOT NULL
-        ORDER BY chromosome ASC, p_value_nlog DESC;
+        ORDER BY chromosome, p_value;
     `);
-
-    const [totalCountRows] = await connection.query(`SELECT ROW_COUNT()`);
-    const totalCount = pluck(totalCountRows);
-
-    // last_insert_id() retrieves the FIRST successfully generated autoincremented id
-    const [firstIdRows] = await connection.query(`SELECT LAST_INSERT_ID()`)
-    const firstId = pluck(firstIdRows);
 
     console.log(`[${duration()} s] Storing aggregated variants...`);
     await connection.execute(`
@@ -193,48 +239,10 @@ async function importVariants() {
             "${gender}",
             position_abs_aggregate as position_abs,
             p_value_nlog_aggregate as p_value_nlog
-        FROM stage
-        WHERE p_value BETWEEN 0 AND 1 AND chromosome IS NOT NULL;
+        FROM ${stageTable}
+        ORDER BY position_abs, p_value_nlog
     `);
 
-    // enable indexes to speed up next steps
-    console.log(`[${duration()} s] Indexing tables...`);
-    await connection.query(`
-        ALTER TABLE ${variantTable} ENABLE KEYS;
-        ALTER TABLE ${aggregateTable} ENABLE KEYS;
-    `);
-
-    // updating variants table with Q-Q plot flag
-    console.log(`[${duration()} s] Updating plot_qq values...`);
-    const intervals = getIntervals(totalCount, 10000).map(i => i + firstId);
-    await connection.query(`
-        UPDATE ${variantTable}
-        SET show_qq_plot = 1
-        WHERE id IN (${intervals})
-    `);
-
-    // calculating lambdaGC (eg: lambdagc_male)
-    // note: statement needed to be rewritten for mysql
-    console.log(`[${duration()} s] Calculating lambdaGC value...`);
-    const [medianRows] = await connection.query(`
-        CREATE TEMPORARY TABLE variant_median (
-            id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            p_value double
-        )
-            SELECT p_value
-            FROM ${variantTable}
-            WHERE gender = '${gender}'
-            ORDER BY p_value;
-
-        set @count = (SELECT count(*) FROM variant_median);
-        set @midpoint = (SELECT CEIL(@count / 2));
-        set @midpoint_offset = (SELECT @count % 2);
-
-        SELECT AVG(p_value) FROM variant_median
-            WHERE id IN (@midpoint, 1 + @midpoint - @midpoint_offset);
-    `);
-    const pMedian = pluck(medianRows.pop()); // get last result set
-    const lambdaGC = getLambdaGC(pMedian);
     await connection.execute(`
         INSERT INTO phenotype_metadata (phenotype_id, gender, lambda_gc)
         VALUES (:phenotypeId, :gender, :lambdaGC)
@@ -242,18 +250,22 @@ async function importVariants() {
             lambda_gc = :lambdaGC
     `, {phenotypeId, gender, lambdaGC});
 
-    // drop staging table
-    connection.query(`DROP TEMPORARY TABLE stage`);
-
     // log imported variants
     connection.execute(`
         UPDATE phenotype SET
-            import_count = :totalCount,
+            import_count = SELECT COUNT(*) FROM ${variantTable},
             import_date = NOW()
         WHERE
             id = :phenotypeId`,
-        {phenotypeId, totalCount}
+        {phenotypeId}
     );
+
+
+    // clear variants if needed
+    if (shouldIndex) {
+        console.log(`[${duration()} s] Indexing ${variantTable}, ${aggregateTable}...`);
+        await connection.query(indexSql);
+    }
 
     await connection.query(`COMMIT`);
     await connection.end();

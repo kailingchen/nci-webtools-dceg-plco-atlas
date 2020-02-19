@@ -74,8 +74,9 @@ async function importVariants() {
 
     // updating variants table with expected p values
     console.log(`[${duration()} s] Updating expected p-values...`);
-    await connection.query(`
-        CREATE TEMPORARY TABLE variant_expected_p (id bigint, p_value double, p_value_expected double) AS
+    let sql = (`
+        DROP TABLE IF EXISTS variant_expected_p;
+        CREATE TABLE variant_expected_p (id bigint, p_value double, p_value_expected double) AS
             SELECT v.id, v.p_value, (v.id - ${firstId - 1} - 0.5) / (${totalCount}) AS p_value_expected
             FROM ${variantTable} v WHERE gender = '${gender}' ORDER BY p_value ASC;
 
@@ -85,6 +86,8 @@ async function importVariants() {
         WHERE
             v.id = ve.id;
     `);
+    console.log(sql);
+    // await connection.query(sql);
 
 
     return await connection.end();
