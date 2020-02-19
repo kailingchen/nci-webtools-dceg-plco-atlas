@@ -4,6 +4,7 @@ import { initialize } from './actions';
 import ReduxThunk from 'redux-thunk';
 
 export const getInitialState = () => ({
+  tmp_phenotypes: null,
   phenotypes: null,
   summaryResults: {
     selectedListType: 'categorical',
@@ -113,7 +114,6 @@ export const getInitialState = () => ({
     messages: [],
     searchCriteriaPhenotypeCorrelations: {},
     collapseCriteria: true
-    // tooltipData: null
   },
   browsePhenotypes: {
     selectedPhenotype: null,

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { forwardRef, useImperativeHandle } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { updatePhenotypeCorrelations } from '../../services/actions';
 import { Spinner } from 'react-bootstrap';
@@ -8,13 +8,18 @@ import {
   createElement as h
 } from '../../services/plots/utils';
 
-export function Heatmap() {
-  const dispatch = useDispatch();
+export const Heatmap = forwardRef(({}, ref) => {
 
+  useImperativeHandle(ref, () => ({
+    resetTooltip() {
+      hideTooltip();
+    }
+  }));
+
+  const dispatch = useDispatch();
   const {
     heatmapData,
     heatmapLayout,
-    // tooltipData,
     loading
   } = useSelector(state => state.phenotypeCorrelations);
 
@@ -76,9 +81,9 @@ export function Heatmap() {
       }
       heatmapContainer.appendChild(tooltip);
       // show tooltip
-      const tooltipX = points[0].x;
-      const tooltipY = points[0].y;
-      const tooltipCorrelation = points[0].text;
+      const tooltipX = points[0].text.x;
+      const tooltipY = points[0].text.y;
+      const tooltipCorrelation = points[0].text.z;
       const html = h('div', { className: '' }, [
         h('div', null, [
           h(
@@ -167,4 +172,4 @@ export function Heatmap() {
       </div>
     </>
   );
-}
+});
