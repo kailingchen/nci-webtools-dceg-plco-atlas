@@ -190,6 +190,9 @@ async function importVariants() {
     const pMedian = pluck(medianRows.pop()); // get last result set
     const lambdaGC = getLambdaGC(pMedian);
 
+    // save total counts
+    const [countRows] = await connection.query(`SELECT COUNT(*) FROM ${stageTable}`);
+    const count = pluck(countRows);
 
     console.log(`[${duration()} s] Inserting values into variant table...`);
     await connection.execute(`
@@ -243,12 +246,30 @@ async function importVariants() {
         ORDER BY position_abs, p_value_nlog
     `);
 
+    // insert lambdagc and counts
     await connection.execute(`
-        INSERT INTO phenotype_metadata (phenotype_id, gender, lambda_gc)
-        VALUES (:phenotypeId, :gender, :lambdaGC)
+        INSERT INTO phenotype_metadata (phenotype_id, gender, chromosome, lambda_gc, count)
+        VALUES (:phenotypeId, :gender, :chromosome, :lambdaGC, :count)
         ON DUPLICATE KEY UPDATE
-            lambda_gc = :lambdaGC
-    `, {phenotypeId, gender, lambdaGC});
+            lambda_gc = :lambdaGC,
+            count = :count
+    `, {phenotypeId, gender, chromosome: 'all', lambdaGC, count});
+
+    for (let i = 1; i <= 22; i ++) {
+        let [countRows] = await connection.execute(
+            `SELECT COUNT(*) FROM ${stageTable}
+            WHERE chromosome = :chromosome`,
+            {chromosome: i}
+        );
+
+        await connection.execute(
+            `INSERT INTO phenotype_metadata (phenotype_id, gender, chromosome, count)
+            VALUES (:phenotypeId, :gender, :chromosome, :count)
+            ON DUPLICATE KEY UPDATE
+                count = :count`,
+            {phenotypeId, gender, chromosome: i, count: pluck(countRows)}
+        );
+    }
 
     // log imported variants
     connection.execute(`
@@ -259,7 +280,6 @@ async function importVariants() {
             id = :phenotypeId`,
         {phenotypeId}
     );
-
 
     // clear variants if needed
     if (shouldIndex) {
