@@ -36,3 +36,8 @@ test('removeAllVals() => remove values [2, 3] from [1, 2, 3]', () => {
 test('removeAllVals() => remove values [3, 4] from [1, 2, 3]', () => {
   expect(removeAllVals([1, 2, 3], [3, 4])).toStrictEqual([1, 2]);
 }) 
+
+// fail on purpose
+test('containsVal() => [1, 2, 3] contains value 3', () => {
+  expect(containsVal([1, 2, 3], 3)).toBe(false);
+}) 
