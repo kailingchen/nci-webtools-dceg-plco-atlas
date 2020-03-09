@@ -1,5 +1,11 @@
 import React, { forwardRef, useState, useEffect, useImperativeHandle } from 'react';
 import { Spinner } from 'react-bootstrap';
+import { 
+  containsVal, 
+  containsAllVals, 
+  removeVal, 
+  removeAllVals
+} from './tree-select-utils';
 
 export const TreeSelect = forwardRef(({
     onChange,
@@ -27,42 +33,6 @@ export const TreeSelect = forwardRef(({
   const clearSearchFilter = () => {
     setSearchInput('');
     setListType('categorical');
-  };
-
-  const containsVal = (arr, val) => {
-    let result = false;
-    for (var i = 0; i < arr.length; i++) {
-      if (arr[i].value === val) {
-        result = true;
-      }
-    }
-    return result;
-  };
-
-  const containsAllVals = (arr, vals) => {
-    let result = true;
-    for (var i = 0; i < vals.length; i++) {
-      if (!containsVal(arr, vals[i].value)) {
-        result = false;
-      }
-    }
-    return result;
-  };
-
-  const removeVal = (arr, val) => {
-    for (var i = 0; i < arr.length; i++) {
-      if (arr[i].value === val) {
-        arr.splice(i, 1);
-      }
-    }
-    return arr;
-  };
-
-  const removeAllVals = (arr, vals) => {
-    for (var i = 0; i < vals.length; i++) {
-      removeVal(arr, vals[i].value);
-    }
-    return arr;
   };
 
   const expandParents = (displayTreeParent) => {
@@ -328,6 +298,7 @@ export const TreeSelect = forwardRef(({
           toggleHideChildren(item.value);
         }
         for (let i = 0; i < newValues.length; i++) {
+          console.log('containsVal values', values);
           if (!containsVal(values, newValues[i].value)) {
             // only add if value did not exist before
             values.push(newValues[i]);
